@@ -5,15 +5,25 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
+import ssl
 import asyncio
 
 # Загружаем переменные окружения (токен из .env)
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-render-app.onrender.com")  # Замените на ваш URL
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 # Настройка логирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
@@ -290,7 +300,6 @@ async def contacts(callback: CallbackQuery):
     (встречи по предварительной договоренности)
     """
     
-    # Создаем простую клавиатуру БЕЗ URL для тестирования
     contacts_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_menu")],
@@ -299,17 +308,9 @@ async def contacts(callback: CallbackQuery):
     
     try:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=contacts_kb)
-        return
-    except Exception as e:
-        logging.error(f"Ошибка в contacts (попытка 1): {e}")
-    
-    # Если не получилось, пробуем отправить новое сообщение
-    try:
+    except Exception:
         await callback.message.answer(text, parse_mode="Markdown", reply_markup=contacts_kb)
-        await callback.answer("✅ Контакты загружены")
-    except Exception as e:
-        logging.error(f"Ошибка в contacts (попытка 2): {e}")
-        await callback.answer("❌ Ошибка при загрузке контактов", show_alert=True)
+    await callback.answer()
 
 # Обработка нажатия на инлайн-кнопку выбора времени
 @dp.callback_query(F.data == "choose_time")
@@ -334,15 +335,87 @@ async def choose_time(callback: CallbackQuery):
 # Обработчик для любых текстовых сообщений (если пользователь просто пишет текст)
 @dp.message()
 async def handle_text(message: types.Message):
-    # Если пользователь просто написал текст (не в форме), предлагаем меню
     if message.text and not message.text.startswith('/'):
         await message.answer("Выберите раздел из меню:", reply_markup=main_menu_inline)
 
-# ========== ЗАПУСК БОТА ==========
+# ========== WEBHOOK НАСТРОЙКИ ==========
+
+async def on_startup(bot: Bot):
+    """Установка webhook при запуске"""
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(
+            url=WEBHOOK_URL,
+            # drop_pending_updates=True
+        )
+        logger.info(f"Webhook установлен на {WEBHOOK_URL}")
+    else:
+        logger.info("Webhook уже установлен")
+
+async def on_shutdown(bot: Bot):
+    """Удаление webhook при остановке"""
+    await bot.delete_webhook()
+    logger.info("Webhook удален")
+
+async def health_check(request):
+    """Health check endpoint для Render"""
+    return web.Response(text="OK", status=200)
+
+async def handle_main(request):
+    """Корневой endpoint"""
+    return web.Response(text="Telegram Bot is running! Use /start in Telegram.", status=200)
+
+# ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
+
 async def main():
-    print("Бот запущен! Все кнопки встроены в сообщения.")
-    print("Команды: /start, /menu")
-    await dp.start_polling(bot)
+    """Основная функция запуска"""
+    logger.info("Запуск бота...")
+    
+    # Регистрируем обработчики startup/shutdown
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    # Создаем aiohttp приложение
+    app = web.Application()
+    
+    # Создаем обработчик webhook
+    webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    
+    # Регистрируем webhook endpoint
+    webhook_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Регистрируем health check и корневой endpoint
+    app.router.add_get("/health", health_check)
+    app.router.add_get("/", handle_main)
+    
+    # Получаем порт из переменной окружения (Render устанавливает PORT)
+    port = int(os.environ.get("PORT", 10000))
+    host = "0.0.0.0"
+    
+    # Настраиваем приложение aiogram
+    setup_application(app, dp, bot=bot)
+    
+    logger.info(f"Запуск сервера на {host}:{port}")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    print("=" * 50)
+    print("Бот запущен в режиме Webhook!")
+    print(f"Webhook URL: {WEBHOOK_URL}")
+    print("=" * 50)
+    
+    # Запускаем сервер
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host, port)
+    await site.start()
+    
+    # Бесконечный цикл
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен")
