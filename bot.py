@@ -8,15 +8,22 @@ from aiogram.fsm.context import FSMContext
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from dotenv import load_dotenv
-import ssl
 import asyncio
 
-# Загружаем переменные окружения (токен из .env)
+# Загружаем переменные окружения
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "https://your-render-app.onrender.com")  # Замените на ваш URL
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не найден в переменных окружения!")
+
+# Получаем URL Render из переменных окружения
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+if RENDER_EXTERNAL_URL:
+    WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}/webhook"
+else:
+    # Fallback для локальной разработки
+    WEBHOOK_URL = None
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,7 +38,6 @@ dp = Dispatcher()
 
 # ========== ИНЛАЙН-КЛАВИАТУРЫ ==========
 
-# Главное меню (встроенные кнопки)
 main_menu_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="👤 Об эксперте", callback_data="about")],
@@ -42,7 +48,6 @@ main_menu_inline = InlineKeyboardMarkup(
     ]
 )
 
-# Кнопка "Назад в меню"
 back_to_menu_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_menu")]
@@ -80,7 +85,6 @@ async def cmd_menu(message: types.Message):
     """
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_menu_inline)
 
-# Обработка нажатия "Назад в меню"
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
     welcome_text = """
@@ -125,7 +129,6 @@ async def portfolio(callback: CallbackQuery):
     Вот некоторые из реализованных проектов под руководством Александры:
     """
     
-    # Создаем клавиатуру для портфолио с рабочими ссылками
     portfolio_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Кейс: Запуск бренда косметики", callback_data="case_cosmetics")],
@@ -139,7 +142,6 @@ async def portfolio(callback: CallbackQuery):
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=portfolio_kb)
     await callback.answer()
 
-# Обработка нажатий на инлайн-кнопки портфолио
 @dp.callback_query(F.data.startswith("case_"))
 async def show_case_detail(callback: CallbackQuery):
     case_data = callback.data
@@ -175,7 +177,6 @@ async def show_case_detail(callback: CallbackQuery):
             - Увеличение LTV клиента на 50%
         """
     
-    # Создаем клавиатуру с кнопкой "Назад в портфолио"
     back_to_portfolio_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад к портфолио", callback_data="portfolio")],
@@ -245,7 +246,6 @@ async def process_phone(message: types.Message, state: FSMContext):
 async def process_comment(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     
-    # Формируем заявку для "отправки администратору"
     request_text = (
         "*✅ Новая заявка на консультацию!*\n\n"
         f"*Имя:* {user_data['name']}\n"
@@ -256,10 +256,6 @@ async def process_comment(message: types.Message, state: FSMContext):
     
     await message.answer(request_text, parse_mode="Markdown")
     
-    # Здесь должна быть логика отправки заявки администратору (в ЛС или канал)
-    # Например: await bot.send_message(ADMIN_CHAT_ID, request_text, parse_mode="Markdown")
-    
-    # Имитируем отправку
     final_text = """
     🎉 *Спасибо! Ваша заявка принята.*
 
@@ -268,7 +264,6 @@ async def process_comment(message: types.Message, state: FSMContext):
     Что дальше?
     """
     
-    # Клавиатура после отправки формы
     after_form_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Выбрать дату", callback_data="choose_time")],
@@ -312,7 +307,6 @@ async def contacts(callback: CallbackQuery):
         await callback.message.answer(text, parse_mode="Markdown", reply_markup=contacts_kb)
     await callback.answer()
 
-# Обработка нажатия на инлайн-кнопку выбора времени
 @dp.callback_query(F.data == "choose_time")
 async def choose_time(callback: CallbackQuery):
     text = """
@@ -332,7 +326,6 @@ async def choose_time(callback: CallbackQuery):
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
     await callback.answer()
 
-# Обработчик для любых текстовых сообщений (если пользователь просто пишет текст)
 @dp.message()
 async def handle_text(message: types.Message):
     if message.text and not message.text.startswith('/'):
@@ -342,20 +335,24 @@ async def handle_text(message: types.Message):
 
 async def on_startup(bot: Bot):
     """Установка webhook при запуске"""
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != WEBHOOK_URL:
-        await bot.set_webhook(
-            url=WEBHOOK_URL,
-            # drop_pending_updates=True
-        )
-        logger.info(f"Webhook установлен на {WEBHOOK_URL}")
+    if WEBHOOK_URL:
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url != WEBHOOK_URL:
+            await bot.set_webhook(
+                url=WEBHOOK_URL,
+                drop_pending_updates=True
+            )
+            logger.info(f"Webhook установлен на {WEBHOOK_URL}")
+        else:
+            logger.info("Webhook уже установлен")
     else:
-        logger.info("Webhook уже установлен")
+        logger.warning("WEBHOOK_URL не задан. Работаю в polling режиме.")
 
 async def on_shutdown(bot: Bot):
     """Удаление webhook при остановке"""
-    await bot.delete_webhook()
-    logger.info("Webhook удален")
+    if WEBHOOK_URL:
+        await bot.delete_webhook()
+        logger.info("Webhook удален")
 
 async def health_check(request):
     """Health check endpoint для Render"""
@@ -367,9 +364,9 @@ async def handle_main(request):
 
 # ========== ЗАПУСК ПРИЛОЖЕНИЯ ==========
 
-async def main():
-    """Основная функция запуска"""
-    logger.info("Запуск бота...")
+async def main_webhook():
+    """Запуск в режиме Webhook"""
+    logger.info("Запуск бота в режиме Webhook...")
     
     # Регистрируем обработчики startup/shutdown
     dp.startup.register(on_startup)
@@ -378,6 +375,10 @@ async def main():
     # Создаем aiohttp приложение
     app = web.Application()
     
+    # Регистрируем health check и корневой endpoint
+    app.router.add_get("/health", health_check)
+    app.router.add_get("/", handle_main)
+    
     # Создаем обработчик webhook
     webhook_handler = SimpleRequestHandler(
         dispatcher=dp,
@@ -385,24 +386,24 @@ async def main():
     )
     
     # Регистрируем webhook endpoint
-    webhook_handler.register(app, path=WEBHOOK_PATH)
-    
-    # Регистрируем health check и корневой endpoint
-    app.router.add_get("/health", health_check)
-    app.router.add_get("/", handle_main)
-    
-    # Получаем порт из переменной окружения (Render устанавливает PORT)
-    port = int(os.environ.get("PORT", 10000))
-    host = "0.0.0.0"
+    webhook_handler.register(app, path="/webhook")
     
     # Настраиваем приложение aiogram
     setup_application(app, dp, bot=bot)
     
+    # Получаем порт из переменной окружения
+    port = int(os.environ.get("PORT", 10000))
+    host = "0.0.0.0"
+    
     logger.info(f"Запуск сервера на {host}:{port}")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    if WEBHOOK_URL:
+        logger.info(f"Webhook URL: {WEBHOOK_URL}")
+    
     print("=" * 50)
     print("Бот запущен в режиме Webhook!")
-    print(f"Webhook URL: {WEBHOOK_URL}")
+    print(f"Сервер запущен на {host}:{port}")
+    if WEBHOOK_URL:
+        print(f"Webhook URL: {WEBHOOK_URL}")
     print("=" * 50)
     
     # Запускаем сервер
@@ -414,8 +415,28 @@ async def main():
     # Бесконечный цикл
     await asyncio.Event().wait()
 
+async def main_polling():
+    """Запуск в режиме Polling (для локальной разработки)"""
+    logger.info("Запуск бота в режиме Polling...")
+    
+    # Удаляем webhook перед запуском polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook удален, запускаем polling...")
+    except Exception as e:
+        logger.warning(f"Ошибка при удалении webhook: {e}")
+    
+    await dp.start_polling(bot)
+    
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        # Если задан WEBHOOK_URL - запускаем в режиме webhook
+        if WEBHOOK_URL:
+            asyncio.run(main_webhook())
+        else:
+            # Иначе запускаем в режиме polling (для локальной разработки)
+            asyncio.run(main_polling())
     except KeyboardInterrupt:
         logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
